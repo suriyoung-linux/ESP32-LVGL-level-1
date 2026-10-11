@@ -1,0 +1,15 @@
+.pio/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/settings.json
+.idea/
+*.bin
+*.elf
+*.map
+include/secrets.h
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example

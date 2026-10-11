@@ -1,0 +1,98 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PlatformIO: Open Home in Browser (SSH)",
+      "type": "process",
+      "command": "${env:HOME}/.platformio/penv/bin/python",
+      "args": [
+        "${workspaceFolder}/scripts/open_pio_home.py"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "PlatformIO: Build (Ubuntu)",
+      "type": "process",
+      "command": "${env:HOME}/.platformio/penv/bin/platformio",
+      "args": [
+        "run"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "PlatformIO: Upload (Ubuntu)",
+      "type": "process",
+      "command": "${env:HOME}/.platformio/penv/bin/platformio",
+      "args": [
+        "run",
+        "-t",
+        "upload"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "PlatformIO: Serial Monitor (Ubuntu)",
+      "type": "process",
+      "command": "sg",
+      "args": [
+        "dialout",
+        "-c",
+        "\"${env:HOME}/.platformio/penv/bin/platformio\" device monitor"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    },
+    {
+      "label": "PlatformIO: Device List (Ubuntu)",
+      "type": "process",
+      "command": "${env:HOME}/.platformio/penv/bin/platformio",
+      "args": [
+        "device",
+        "list"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
+    }
+  ]
+}
