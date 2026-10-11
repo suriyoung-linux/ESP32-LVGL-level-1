@@ -26,6 +26,79 @@ Template โปรเจกต์ PlatformIO สำหรับบอร์ด *
 - เข้าใจว่าไฟล์ตั้งค่าแต่ละไฟล์ทำหน้าที่อะไร และต้องแก้ไฟล์ไหน
 - ใช้โฟลเดอร์นี้เป็นต้นแบบเริ่ม Lab ถัดไปได้ (คัดลอก → เปลี่ยนชื่อ → แก้ `src/main.cpp`)
 
+## Repository บน GitHub
+
+โปรเจกต์เก็บอยู่ที่ [suriyoung-linux/ESP32-LVGL-level-1](https://github.com/suriyoung-linux/ESP32-LVGL-level-1)
+เป็น repository แบบ **Private** และใช้ branch **`main`**
+โฟลเดอร์บน Ubuntu นี้เริ่มใช้ Git และเชื่อม `origin` แล้ว จึงใช้คำสั่งอัปเดตด้านล่างได้ทันที
+
+### อัปโหลด README ที่แก้ไข
+
+เปิด **Terminal → New Terminal** ใน VS Code ที่เชื่อมกับ Ubuntu แล้วรันทีละบรรทัด:
+
+```bash
+cd "$HOME/PlatformIO/Projects/Test ESP32-dev"
+git status
+git add README.md
+git commit -m "docs: add GitHub upload instructions"
+git push origin main
+```
+
+`git add` เลือกไฟล์ที่จะบันทึก, `git commit` บันทึกการเปลี่ยนแปลงในเครื่อง
+และ `git push` ส่ง commit ขึ้น GitHub เมื่อสำเร็จให้รีเฟรชหน้า repository เพื่อดู README ล่าสุด
+
+### อัปโหลดการเปลี่ยนแปลงทั้งโปรเจกต์ครั้งต่อไป
+
+บันทึกไฟล์ที่แก้ไขใน VS Code ก่อน แล้วรัน:
+
+```bash
+cd "$HOME/PlatformIO/Projects/Test ESP32-dev"
+git status
+git diff
+git add .
+git diff --cached --stat
+git commit -m "Update ESP32 weather dashboard"
+git push origin main
+```
+
+เปลี่ยนข้อความใน `git commit -m` ให้ตรงกับงาน เช่น `Fix weather API parsing`
+หาก `git status` แสดง `nothing to commit, working tree clean` แปลว่าไม่มีไฟล์ใหม่ให้บันทึก
+แต่ถ้ามี commit ในเครื่องที่ยังไม่ได้ส่ง สามารถใช้ `git push origin main` ได้เลย
+
+ไฟล์ `include/secrets.h`, `.pio/`, ไฟล์ Build และ Python cache ถูกยกเว้นด้วย `.gitignore`
+ใน GitHub จะมี `include/secrets.h.example` เป็นแม่แบบ เมื่อใช้เครื่องใหม่ให้คัดลอกแม่แบบ
+เป็น `include/secrets.h` แล้วกรอกชื่อ WiFi และรหัสผ่านในเครื่องนั้น
+
+### ตรวจปลายทางและรับข้อมูลล่าสุด
+
+```bash
+git remote -v
+git branch --show-current
+git log -1 --oneline
+```
+
+ปลายทาง `origin` ต้องเป็น `https://github.com/suriyoung-linux/ESP32-LVGL-level-1.git`
+และ branch ปัจจุบันต้องเป็น `main`
+หากแก้ไฟล์จากเครื่องอื่นหรือจากหน้า GitHub ให้รับข้อมูลล่าสุดก่อนเริ่มแก้งาน
+ขณะที่ไม่มีการเปลี่ยนแปลงค้างในเครื่อง:
+
+```bash
+git pull --ff-only origin main
+```
+
+หาก `push` แจ้ง `rejected (non-fast-forward)` หลังมี commit ใหม่ในเครื่อง
+ให้รัน `git pull --rebase origin main` แล้ว `git push origin main` อีกครั้ง
+หาก rebase พบ conflict ให้แก้ไฟล์ที่ Git แจ้งและทำ rebase ให้จบก่อน push
+
+### อัปเดตผ่านเมนู VS Code
+
+กด **Ctrl+Shift+G** เพื่อเปิด **Source Control** เลือก repository ของโปรเจกต์นี้
+จากนั้นกด **+** เพื่อ Stage ไฟล์ ใส่ข้อความ commit แล้วกด **Commit**
+ตามด้วย **… → Push** หากมีหน้าต่างเข้าสู่ระบบ GitHub ให้ใช้บัญชี `suriyoung-linux`
+
+การอัปโหลดขึ้น GitHub ใช้เก็บซอร์สโค้ด ส่วนการส่งโปรแกรมลงบอร์ด ESP32
+ยังใช้ **PlatformIO: Upload (Ubuntu)** ตามขั้นตอนด้านล่าง
+
 ## โครงสร้างโปรเจกต์
 
 ```
