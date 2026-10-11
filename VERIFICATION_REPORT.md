@@ -1,5 +1,95 @@
 # รายงานตรวจ Build / Upload / Serial / PIO Home — ESP32 CYD
 
+## เว็บเบราว์เซอร์ เฟิร์มแวร์ 1.2.0 — 12 ตุลาคม 2569
+
+- เพิ่มหน้าเว็บภาษาไทยที่ `GET /` ดู DHT22, LDR, อากาศ/PM2.5 และควบคุม RGB
+  เปิดผ่าน IP ของ ESP32 จากเครือข่ายเดียวกัน โดยไม่ต้อง SSH ไป Ubuntu
+- หน้าเว็บรวม CSS/JavaScript ไม่มี CDN เก็บ gzip 5,518 bytes ใน PROGMEM
+  ส่งด้วย send_P ที่ระบุความยาว; สร้าง asset ก่อน Build อัตโนมัติ
+- เพิ่ม `GET /api/sensors` ส่งค่าจาก cache ของการอ่านอุปกรณ์จริง
+  ไม่อ่าน DHT ซ้ำจาก HTTP request; ส่ง null เมื่อ waiting/unavailable/stale
+  ค่าดิบ ADC 0 ที่อ่านได้จริงยังส่งเป็น 0 และ R ที่คำนวณไม่ได้เป็น null
+- หน้าเว็บตรวจ sensors/status ประมาณทุก 2 วินาที และ weather ทุก 15 วินาที
+  provider ยังใช้รอบเดิม; polling ไม่ซ้อนและหยุดเมื่อแท็บถูกซ่อน
+- Build esp32dev ผ่าน: RAM 50,076 / 327,680 bytes (15.3%),
+  Flash 1,040,041 / 1,310,720 bytes (79.3%)
+  เทียบเวอร์ชัน 1.1.0 เพิ่ม static RAM 32 bytes และ Flash 7,464 bytes
+- Native weather/API, DHT11/DHT22 และ weather_service ผ่าน
+  เพิ่มการตรวจ root gzip, schema/ค่า sensor, stale/null, millis wrap และค่าศูนย์จริง
+- ทดสอบ HTML และ gzip asset จริงใน Chromium กับ API จำลอง ผ่านทั้ง desktop 1280 px และ mobile 390 px:
+  ค่าปัจจุบัน, ปุ่ม RGB POST, เลือกจังหวัด, DHT fault/recovery, ADC 0,
+  weather 202 / HTTP 401, offline/recovery และไม่มี JavaScript error
+  ตรวจภาพหน้าจอและยืนยันว่า mobile ไม่ล้นด้านข้าง
+- เครื่องทดสอบไม่มี runtime/font ของ browser จึงดาวน์โหลดและแตกไว้เฉพาะ /tmp
+  ไม่ติดตั้งแพ็กเกจระบบ; dependency ของเฟิร์มแวร์ยังเป็นชุดเดิม
+- ยังไม่ได้ Upload หรือเปิดหน้าเว็บจากบอร์ดจริงในรอบนี้
+  ภาพที่ตรวจเป็นหน้าเว็บจริงกับข้อมูล API จำลองสำหรับทดสอบ ไม่ใช่ผลวัดอุปกรณ์จริง
+
+วิธีเปิดและ endpoint: [WEB_BROWSER_GUIDE.md](WEB_BROWSER_GUIDE.md)
+
+
+## Optimization เฟิร์มแวร์ 1.1.0
+
+- Build esp32dev ผ่าน: Flash 1,032,577 / 1,310,720 bytes, static RAM 50,044 / 327,680 bytes
+- เทียบ Build ก่อนรอบนี้ Flash ลด 2,748 bytes; static RAM ลด 8 bytes
+- JSON provider 4,096 → 1,024 bytes; JSON API weather 3,072 → 928 bytes;
+  JSON locations 2,048 → 1,024 bytes (ยืนยันความจุด้วย compiler ESP32)
+- อัปเดต ArduinoJson เป็น 6.21.6; pin Adafruit Unified Sensor 1.1.15
+- ตรวจ native weather, weather_service และ DHT11/DHT22 ผ่าน
+  รวมการกรอง JSON, overflow/ข้อความยาว, cache/queue/reconnect, sensor failure และการลดวาดจอซ้ำ
+- เพิ่มค่าทรัพยากรจริงใน /api/status สำหรับตรวจหลัง Upload
+- ยังไม่ได้ Upload หรือ benchmark บนบอร์ดรอบนี้
+
+รายละเอียดและเวอร์ชันอ้างอิง: [OPTIMIZATION_REPORT.md](OPTIMIZATION_REPORT.md)
+
+
+## เปลี่ยน Weather API เป็น OpenWeather
+
+- ใส่ API key ที่ผู้ใช้ให้ไว้ใน `include/secrets.h` พร้อมเพิ่ม template `OPENWEATHER_API_KEY`
+  และ fallback สำหรับ secrets.h เดิมที่ยังไม่มี key; ไม่บันทึก key จริงในไฟล์ที่ Git ติดตาม
+- ใช้ HTTPS `/data/2.5/weather` (`units=metric`) และ `/data/2.5/air_pollution`
+  กับ key เดียวกัน พร้อมเปลี่ยน CA root ให้ตรงกับ certificate chain ของ OpenWeather
+- ทดสอบจาก Ubuntu ด้วย key จริงและ CA root ที่ใช้ในเฟิร์มแวร์:
+  Current Weather และ Air Pollution ตอบ HTTP 200 ทั้งคู่; บันทึกผลเป็น fixture โดยไม่มี key
+- เปลี่ยน parser, condition IDs, source บน TFT และ JSON API ให้ตรงกับ OpenWeather
+  ฝนเป็น `rain.1h` หน่วย mm/h; ลมแปลง m/s เป็น km/h; ทิศลมที่ขาดเป็น NAN / null
+  field rain ที่ไม่มีในผลสำเร็จถือว่าไม่มีปรากฏการณ์ฝน ส่วน rain ที่ผิดรูปแบบปฏิเสธ
+  PM2.5 ไม่ระบุช่วงเฉลี่ย จึงส่ง `interval_seconds: null`
+- JSON ใช้ `weather_data_time_utc`, `air_data_time_utc` และ `rain_rate_mm_per_hour`
+  แทน field ของผู้ให้บริการเดิม; อธิบายใน WEATHER_API_GUIDE.md
+- แสดงข้อความเมื่อไม่ได้ใส่ key, HTTP 401 และ HTTP 429; ค่า cache เดิมยังติดป้าย STALE เมื่อโหลดล้มเหลว
+- `python3 scripts/check_weather.py` ผ่าน: fixture จริงจาก OpenWeather, ค่าขาด/ผิดช่วง,
+  ฝนที่ไม่มี/ผิดรูปแบบ, การแปลงลม, condition IDs และ JSON API handlers จริง
+- `python3 scripts/check_dht.py` ผ่านทั้ง DHT11 และ DHT22 รวมการปัดเปลี่ยนหน้า
+- Build `esp32dev` ผ่าน `[SUCCESS]`: RAM 50,052 / 327,680 bytes (15.3%),
+  Flash 1,035,325 / 1,310,720 bytes (79.0%)
+- ตรวจแล้ว key ไม่มีในซอร์ส เอกสาร หรือ fixture ที่เตรียมอัป Git; secrets.h ยังถูก .gitignore
+- ตรวจล่าสุดพบ `/dev/ttyUSB0` แต่รอบนี้ยังไม่ได้ Upload หรือทดสอบ Weather / DHT บนบอร์ดจริง
+
+
+## เพิ่มหน้า DHT และการปัดเปลี่ยนหน้า — 12 ตุลาคม 2569
+
+- เพิ่มการอ่าน DHT22 (เปลี่ยนค่าเริ่มต้นจาก DHT11 ตามอุปกรณ์ที่ผู้ใช้เลือก) จาก DATA GPIO27 ด้วย Adafruit DHT sensor library 1.4.7
+  ตั้งชนิดได้ใน `CYD_DHT_MODEL` ที่ `include/app_config.h` โดยเลือก 11 หรือ 22
+- อ่านทุก 2 วินาทีหลังรอให้เซนเซอร์พร้อม ใช้การอ่านจริงหนึ่งครั้งต่อรอบสำหรับอุณหภูมิ/ความชื้น
+  และทำงานแยกจากการเชื่อม WiFi / NTP / Weather API
+- เมื่ออ่านล้มเหลวหรือค่าผิดช่วง ซ่อนค่าตัวเลขทั้งคู่เป็น `--.-` และแสดง
+  `No sensor / sensor error` พร้อมลองอ่านใหม่อัตโนมัติ; ไม่ยืนยันแยกสาเหตุว่าไม่ได้ต่อหรือเสีย
+- เพิ่มปุ่ม DHT และการปัดซ้าย/ขวาระหว่าง WEATHER, LDR/RGB และ DHT แบบวนรอบ
+  ตัดสินการแตะตอนปล่อยนิ้ว เพื่อไม่สั่ง START/STOP หรือ REFRESH ระหว่างปัด
+- Build environment `esp32dev` ผ่าน `[SUCCESS]`:
+  RAM 50,052 / 327,680 bytes (15.3%), Flash 1,035,109 / 1,310,720 bytes (79.0%)
+- `python3 scripts/check_dht.py` ผ่านสำหรับทั้ง DHT11 และ DHT22 โดยใช้ sensor/touch จำลอง
+  ทดสอบโค้ด service และ dashboard handlers จริง: ไม่ต่อ/อ่านผิด/ต่อกลับ,
+  การเว้นรอบอ่าน, millis wrap, การซ่อนค่าเก่า, ปุ่มเลือกหน้า,
+  การปัดซ้าย/ขวา, การลากแนวตั้ง และการปัดทับ STOP/REFRESH ที่ต้องไม่สั่งปุ่ม
+- `python3 scripts/check_weather.py` ผ่านสำหรับ parser, RGB GPIO และ JSON API เดิม
+- ยังไม่ได้ Upload หรือทดสอบการอ่านบนฮาร์ดแวร์: การตรวจล่าสุดไม่พบ `/dev/ttyUSB*`
+  หรือ `/dev/ttyACM*` บน Ubuntu ต้องต่อ/ส่งต่อ USB ของ ESP32 ให้ Ubuntu เห็นก่อน
+  และยังต้องยืนยันภาพจอ การปัด และค่าที่วัดจาก DHT22 จริงหลัง Upload
+
+รายละเอียดต่อสายและใช้งานอยู่ใน [README.md](README.md#อ่านอุณหภูมิและความชื้นจริงจาก-dht11--dht22)
+
 ตรวจเมื่อ 11 ตุลาคม 2569 บน Ubuntu ผ่าน VMware โดยใช้ PlatformIO environment `esp32dev`
 บอร์ดที่ตรวจพบคือ ESP32-D0WD-V3, Flash 4 MB, USB Serial CH340 (`1a86:7523`) ที่ `/dev/ttyUSB0`
 

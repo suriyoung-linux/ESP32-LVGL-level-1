@@ -9,6 +9,7 @@
 #include <ctime>
 #include "dashboard.h"
 #include "weather_service.h"
+#include "dht_sensor.h"
 #include <WiFi.h>
 #include <esp_adc_cal.h>
 
@@ -16,6 +17,8 @@
 #include "board_config.h"
 #include "ldr_measurement.h"
 #include "api_contract.h"
+#include "ldr_reading.h"
+#include "web_dashboard.h"
 
 // ค่าจริงอยู่ในไฟล์ที่ไม่เก็บใน Git; ถ้ายังไม่มีให้ใช้แม่แบบว่างเพื่อ Build ได้
 #if __has_include("secrets.h")
@@ -28,12 +31,15 @@ namespace {
 
 Dashboard dashboard;
 WeatherService weatherService;
+DhtSensor dhtSensor;
 WebServer apiServer(weather::API_PORT);
 bool apiStarted = false;
 bool wasNetworkConnected = false;
 bool lastRgbEnabled = true;
 esp_adc_cal_characteristics_t adcCalibration = {};
 esp_adc_cal_value_t adcCalibrationSource = ESP_ADC_CAL_VAL_DEFAULT_VREF;
+ldr::Reading latestLdrReading;
+uint32_t lastWeatherScheduleAt = 0;
 uint32_t lastLdrReadAt = 0;  // เวลาอ่าน LDR และอัปเดต LED ครั้งล่าสุด
 uint32_t lastWiFiCheckAt = 0;
 uint32_t lastWiFiAttemptAt = 0;
@@ -210,7 +216,11 @@ void printBanner()
     Serial.println();
     Serial.println("==========================================");
     Serial.printf("%s from ESP32-2432S028 (CYD)!\n", app::HELLO_TEXT);
-    Serial.println("Mode : Touch weather dashboard + separate LDR/RGB + WiFi IPv4");
+    Serial.printf("Firmware: %s\n", app::FIRMWARE_VERSION);
+    Serial.println("Mode : Touch WEATHER / LDR-RGB / DHT + swipe navigation + WiFi IPv4");
+    Serial.printf("DHT%u: DATA GPIO%u, temperature C / humidity %%, interval %lu ms\n",
+                  app::DHT_SENSOR_MODEL, cyd::SAFE_SENSOR_PIN,
+                  static_cast<unsigned long>(app::DHT_READ_INTERVAL_MS));
     const char *calibrationName = adcCalibrationSource == ESP_ADC_CAL_VAL_EFUSE_TP ? "eFuse Two Point"
                                 : adcCalibrationSource == ESP_ADC_CAL_VAL_EFUSE_VREF ? "eFuse Vref"
                                 : "Default Vref (estimated)";
@@ -268,6 +278,7 @@ void updateLightLed()
         ledName = "STOPPED";
         ledColor = TFT_LIGHTGREY;
     }
+    latestLdrReading = {ldrValue, millivolts, resistanceOhms, millis(), ledName, true};
     updateDisplay(ldrValue, millivolts, resistanceText, ledColor);
 
     Serial.printf("LDR (GPIO%u) = %u (raw ADC)  V = %.3f V  %s  LED = %s\n",
@@ -277,8 +288,17 @@ void updateLightLed()
 
 void sendJson(int status, const JsonDocument &json)
 {
+    if (json.overflowed()) {
+        apiServer.send(500, "application/json; charset=utf-8", "{\"error\":\"JSON capacity exceeded\"}");
+        return;
+    }
     String body;
-    serializeJson(json, body);
+    const size_t length = measureJson(json);
+    body.reserve(length + 1);
+    if (serializeJson(json, body) != length) {
+        apiServer.send(503, "application/json; charset=utf-8", "{\"error\":\"Insufficient memory\"}");
+        return;
+    }
     apiServer.sendHeader("Cache-Control", "no-store");
     apiServer.send(status, "application/json; charset=utf-8", body);
 }
@@ -327,13 +347,13 @@ void apiWeather()
     weatherService.request(location);
     const auto &data = weatherService.get(location);
     const auto &c = data.conditions;
-    DynamicJsonDocument json(3072);
+    DynamicJsonDocument json(api::WEATHER_JSON_CAPACITY);
     writePosition(json.createNestedObject("location"), location, data.position);
     json["pending"] = data.pending;
     json["error"] = data.error;
-    json["source"]["weather"] = "Open-Meteo";
-    json["source"]["air_quality"] = "Open-Meteo / CAMS";
-    json["source"]["type"] = "model";
+    json["source"]["weather"] = "OpenWeather";
+    json["source"]["air_quality"] = "OpenWeather Air Pollution";
+    json["source"]["type"] = "current API data";
     auto status = json.createNestedObject("status");
     status["weather_available"] = c.valid;
     status["air_available"] = data.air.valid;
@@ -341,8 +361,8 @@ void apiWeather()
         millis() - c.receivedAtMs > weather::REFRESH_INTERVAL_MS + 60000);
     status["air_stale"] = data.air.valid && (data.airFailed || WiFi.status() != WL_CONNECTED ||
         millis() - data.air.receivedAtMs > weather::REFRESH_INTERVAL_MS + 60000);
-    status["weather_model_time_utc"] = c.valid ? c.timestamp : 0;
-    status["air_model_time_utc"] = data.air.valid ? data.air.timestamp : 0;
+    status["weather_data_time_utc"] = c.valid ? c.timestamp : 0;
+    status["air_data_time_utc"] = data.air.valid ? data.air.timestamp : 0;
     auto conditions = json.createNestedObject("weather");
     conditions["temperature_c"] = c.temperature;
     conditions["relative_humidity_percent"] = c.humidity;
@@ -354,9 +374,8 @@ void apiWeather()
         conditions["description"] = nullptr;
     }
     auto rain = json.createNestedObject("rain_cloud");
-    rain["rain_mm"] = c.rain;
-    rain["rain_definition"] = "rain + showers during model interval";
-    rain["interval_seconds"] = c.intervalSeconds;
+    rain["rain_rate_mm_per_hour"] = c.rain;
+    rain["rain_definition"] = "OpenWeather rain.1h (mm/h); absent rain means zero";
     rain["cloud_cover_percent"] = c.clouds;
     auto wind = json.createNestedObject("wind");
     wind["speed_kmh"] = c.windSpeed;
@@ -364,7 +383,7 @@ void apiWeather()
     wind["from_compass"] = weather::windCompass(c.windDirection);
     auto air = json.createNestedObject("air_quality");
     air["pm2_5_ug_m3"] = data.air.pm25;
-    air["interval_seconds"] = data.air.intervalSeconds;
+    air["interval_seconds"] = nullptr;  // Provider does not supply an averaging interval.
     const int httpStatus = (c.valid || data.air.valid) ? 200 : data.pending ? 202 : 503;
     sendJson(httpStatus, json);
 }
@@ -393,13 +412,66 @@ void apiRgb()
     sendJson(200, json);
 }
 
+void apiSensors()
+{
+    StaticJsonDocument<api::SENSORS_JSON_CAPACITY> json;
+    const uint32_t now = millis();
+    const auto &reading = dhtSensor.get();
+    const bool attempted = reading.status != dhtsensor::Status::Waiting;
+    const uint32_t age = now - reading.attemptedAtMs;
+    const bool stale = reading.status == dhtsensor::Status::Ready && age > app::DHT_READ_INTERVAL_MS + 1000;
+    const bool valid = reading.status == dhtsensor::Status::Ready && !stale;
+    auto dht = json.createNestedObject("dht");
+    dht["model"] = app::DHT_SENSOR_MODEL;
+    dht["pin"] = cyd::SAFE_SENSOR_PIN;
+    dht["status"] = stale ? "stale" : valid ? "ready" : attempted ? "unavailable" : "waiting";
+    dht["valid"] = valid;
+    if (valid) {
+        dht["temperature_c"] = reading.temperature;
+        dht["relative_humidity_percent"] = reading.humidity;
+    } else {
+        dht["temperature_c"] = nullptr;
+        dht["relative_humidity_percent"] = nullptr;
+    }
+    if (attempted) dht["age_ms"] = age;
+    else dht["age_ms"] = nullptr;
+    auto light = json.createNestedObject("ldr");
+    const auto &ldrReading = latestLdrReading;
+    const bool lightValid = ldrReading.valid && now - ldrReading.receivedAtMs <= app::LDR_READ_INTERVAL_MS + 1000;
+    light["pin"] = cyd::LDR_PIN;
+    light["valid"] = lightValid;
+    if (lightValid) {
+        light["raw_adc"] = ldrReading.raw;
+        light["millivolts"] = ldrReading.millivolts;
+        light["resistance_ohms"] = ldrReading.resistanceOhms;
+    } else {
+        light["raw_adc"] = nullptr;
+        light["millivolts"] = nullptr;
+        light["resistance_ohms"] = nullptr;
+    }
+    if (ldrReading.valid) light["age_ms"] = now - ldrReading.receivedAtMs;
+    else light["age_ms"] = nullptr;
+    auto rgb = json.createNestedObject("rgb");
+    rgb["enabled"] = dashboard.rgbEnabled();
+    rgb["mode"] = dashboard.rgbEnabled() ? "ldr_automatic" : "stopped";
+    rgb["led_color"] = dashboard.rgbEnabled() && lightValid ? ldrReading.ledName : "STOPPED";
+    sendJson(200, json);
+}
+
 void initApi()
 {
+    apiServer.on("/", HTTP_GET, []() {
+        apiServer.sendHeader("Cache-Control", "no-cache");
+        apiServer.sendHeader("Content-Encoding", "gzip");
+        apiServer.send_P(200, "text/html; charset=utf-8",
+                         reinterpret_cast<const char *>(webdashboard::PAGE_GZIP), webdashboard::PAGE_GZIP_SIZE);
+    });
+    apiServer.on("/api/sensors", HTTP_GET, apiSensors);
     apiServer.on("/api/weather", HTTP_GET, apiWeather);
     apiServer.on("/api/rgb", HTTP_GET, apiRgb);
     apiServer.on("/api/rgb", HTTP_POST, apiRgb);
     apiServer.on("/api/locations", HTTP_GET, []() {
-        DynamicJsonDocument json(2048);
+        DynamicJsonDocument json(api::LOCATIONS_JSON_CAPACITY);
         auto locations = json.createNestedArray("locations");
         for (uint8_t i = 0; i < weather::LOCATION_COUNT; ++i) {
             writePosition(locations.createNestedObject(), i, weatherService.get(i).position);
@@ -407,7 +479,14 @@ void initApi()
         sendJson(200, json);
     });
     apiServer.on("/api/status", HTTP_GET, []() {
-        StaticJsonDocument<256> json;
+        StaticJsonDocument<384> json;
+        json["firmware_version"] = app::FIRMWARE_VERSION;
+        json["heap_free_bytes"] = ESP.getFreeHeap();
+        json["heap_min_free_bytes"] = ESP.getMinFreeHeap();
+        json["heap_largest_block_bytes"] = ESP.getMaxAllocHeap();
+        const uint32_t stackFree = weatherService.workerStackMinFreeBytes();
+        if (stackFree) json["weather_stack_min_free_bytes"] = stackFree;
+        else json["weather_stack_min_free_bytes"] = nullptr;
         json["wifi_connected"] = WiFi.status() == WL_CONNECTED;
         json["ipv4"] = WiFi.localIP().toString();
         json["clock_synchronized"] = time(nullptr) >= 1704067200;
@@ -422,7 +501,7 @@ void initApi()
         sendJson(404, json);
     });
     apiServer.begin();
-    Serial.printf("Local API ready: http://%s/api/locations\n", WiFi.localIP().toString().c_str());
+    Serial.printf("Web dashboard ready: http://%s/\n", WiFi.localIP().toString().c_str());
 }
 
 }  // namespace
@@ -445,6 +524,8 @@ void setup()
     updateLightLed();  // อ่านค่าและเลือกสีแรกทันทีหลังเริ่มโปรแกรม
     lastLdrReadAt = millis();
     lastRgbEnabled = dashboard.rgbEnabled();
+    dhtSensor.begin(millis());
+    dashboard.updateDht(dhtSensor.get());
     if (!weatherService.begin()) Serial.println("Weather worker could not start.");
     initWiFi();
 }
@@ -452,6 +533,7 @@ void setup()
 void loop()
 {
     const uint32_t now = millis();
+    if (dhtSensor.poll(now)) dashboard.updateDht(dhtSensor.get());
     if (now - lastLdrReadAt >= app::LDR_READ_INTERVAL_MS) {
         lastLdrReadAt = now;
         updateLightLed();
@@ -465,8 +547,14 @@ void loop()
     }
     wasNetworkConnected = connected;
     weatherService.poll();
-    weatherService.request(dashboard.selectedLocation());
-    for (uint8_t i = 0; i < weather::LOCATION_COUNT; ++i) weatherService.request(i);
+    if (now - lastWeatherScheduleAt >= weather::SCHEDULE_INTERVAL_MS) {
+        lastWeatherScheduleAt = now;
+        const uint8_t selected = dashboard.selectedLocation();
+        weatherService.request(selected);
+        for (uint8_t i = 0; i < weather::LOCATION_COUNT; ++i) {
+            if (i != selected) weatherService.request(i);
+        }
+    }
     if (apiStarted) apiServer.handleClient();
     dashboard.poll(now, weatherService);
     if (lastRgbEnabled != dashboard.rgbEnabled()) {

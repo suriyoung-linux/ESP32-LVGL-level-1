@@ -1,2 +1,44 @@
-{"latitude":18.80492,"longitude":99.02655,"generationtime_ms":0.1589059829711914,"utc_offset_seconds":25200,"timezone":"Asia/Bangkok","timezone_abbreviation":"GMT+7","elevation":313.0,"current_units":{"time":"unixtime","interval":"seconds","temperature_2m":"°C","relative_humidity_2m":"%","weather_code":"wmo code","rain":"mm","showers":"mm","cloud_cover":"%","wind_speed_10m":"km/h","wind_direction_10m":"°"},"current":{"time":1791722700,"interval":900,"temperature_2m":24.9,"relative_humidity_2m":92,"weather_code":1,"rain":0.00,"showers":0.00,"cloud_cover":31,"wind_speed_10m":3.1,"wind_direction_10m":332}}
-
+{
+  "coord": {
+    "lon": 98.9853,
+    "lat": 18.7883
+  },
+  "weather": [
+    {
+      "id": 801,
+      "main": "Clouds",
+      "description": "few clouds",
+      "icon": "02n"
+    }
+  ],
+  "base": "stations",
+  "main": {
+    "temp": 26.68,
+    "feels_like": 30.01,
+    "temp_min": 26.68,
+    "temp_max": 26.68,
+    "pressure": 1015,
+    "humidity": 92,
+    "sea_level": 1015,
+    "grnd_level": 967
+  },
+  "visibility": 10000,
+  "wind": {
+    "speed": 1.04,
+    "deg": 337,
+    "gust": 1.12
+  },
+  "clouds": {
+    "all": 20
+  },
+  "dt": 1791743822,
+  "sys": {
+    "country": "TH",
+    "sunrise": 1791760614,
+    "sunset": 1791803046
+  },
+  "timezone": 25200,
+  "id": 1153671,
+  "name": "Chiang Mai",
+  "cod": 200
+}

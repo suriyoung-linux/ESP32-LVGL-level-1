@@ -2,13 +2,14 @@
 
 from pathlib import Path
 import subprocess
+import re
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 def firmware_function(source, name):
-    start = source.index("void " + name + "(")
+    start = re.search(r"\b(?:void|bool) " + re.escape(name) + r"\(", source).start()
     brace = source.index("{", start)
     depth = 1
     end = brace + 1
@@ -28,7 +29,7 @@ def main():
         target = Path(directory)
         (target / "Arduino.h").write_text(
             "#pragma once\n#include <cstdint>\n"
-            "constexpr int VSPI=3, LOW=0, HIGH=1, INPUT=0, OUTPUT=1;\n"
+            "constexpr int VSPI=3, LOW=0, HIGH=1, INPUT=0, OUTPUT=1;\n#define PROGMEM\n"
             "void digitalWrite(int,int);\nvoid pinMode(int,int);\n"
         )
         (target / "check.cpp").write_text(template.replace("// @FIRMWARE_FUNCTIONS@", functions))
