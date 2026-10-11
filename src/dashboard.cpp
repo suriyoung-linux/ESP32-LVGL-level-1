@@ -1,6 +1,7 @@
 #include "dashboard.h"
 
 #include <ctime>
+#include <cstring>
 
 namespace {
 constexpr uint16_t BACKGROUND = TFT_BLACK;
@@ -9,6 +10,7 @@ constexpr uint16_t INACTIVE = 0x4208;
 // Share the row positions between rendering and touch hit testing.
 constexpr int16_t HEADER_HEIGHT = 20;
 constexpr int16_t PAGE_TAB_Y = 22, PAGE_TAB_HEIGHT = 20;
+constexpr int16_t PAGE_TAB_X = 6, PAGE_TAB_WIDTH = 100, PAGE_TAB_STEP = 105;
 constexpr int16_t LOCATION_TAB_Y = 46, LOCATION_TAB_HEIGHT = 24;
 constexpr int16_t GROUP_TAB_Y = 74, GROUP_TAB_HEIGHT = 22;
 constexpr int16_t WEATHER_CONTENT_Y = 100;
@@ -40,10 +42,13 @@ void Dashboard::label(const char *text, int16_t x, int16_t y, uint16_t color, ui
 
 void Dashboard::weatherLabel(const char *text, int16_t y, uint16_t color)
 {
-    tft_.setTextSize(1);
-    // Font 4 is 26 pixels high; fit unusually long values within the screen.
-    const uint8_t font = tft_.textWidth(text, 4) <= 304 ? 4 : 2;
-    label(text, 8, y, color, font);
+    // Reuse Font 2 at double size instead of storing another full glyph table.
+    tft_.setTextDatum(ML_DATUM);
+    tft_.setTextSize(2);
+    if (tft_.textWidth(text, 2) > 304) tft_.setTextSize(1);
+    tft_.setTextPadding(0);
+    tft_.setTextColor(color, BACKGROUND);
+    tft_.drawString(text, 8, y, 2);
 }
 
 void Dashboard::button(int16_t x, int16_t y, int16_t width, int16_t height, const char *text, bool active)
@@ -97,6 +102,8 @@ void Dashboard::setRgbEnabled(bool enabled)
 
 void Dashboard::updateLdr(uint16_t raw, uint32_t millivolts, const char *resistance, uint16_t color)
 {
+    if (raw_ == raw && millivolts_ == millivolts && ledColor_ == color &&
+        strcmp(resistance_, resistance) == 0) return;
     raw_ = raw;
     millivolts_ = millivolts;
     snprintf(resistance_, sizeof(resistance_), "%s", resistance);
@@ -112,12 +119,24 @@ void Dashboard::drawHeader()
     button(283, 0, 34, HEADER_HEIGHT, "CAL", false);
 }
 
+void Dashboard::updateDht(const dhtsensor::Reading &reading)
+{
+    const bool changed = reading.status != dhtReading_.status ||
+        (reading.status == dhtsensor::Status::Ready &&
+         (reading.temperature != dhtReading_.temperature || reading.humidity != dhtReading_.humidity));
+    dhtReading_ = reading;
+    if (page_ == Page::Dht && changed) dataDirty_ = true;
+}
+
 void Dashboard::drawLayout()
 {
     tft_.fillScreen(BACKGROUND);
     drawHeader();
-    button(6, PAGE_TAB_Y, 151, PAGE_TAB_HEIGHT, "WEATHER", page_ == Page::Weather);
-    button(163, PAGE_TAB_Y, 151, PAGE_TAB_HEIGHT, "LDR / RGB", page_ == Page::Rgb);
+    const char *pages[] = {"WEATHER", "LDR / RGB", "DHT"};
+    for (uint8_t i = 0; i < 3; ++i) {
+        button(PAGE_TAB_X + i * PAGE_TAB_STEP, PAGE_TAB_Y, PAGE_TAB_WIDTH, PAGE_TAB_HEIGHT,
+               pages[i], static_cast<uint8_t>(page_) == i);
+    }
     if (page_ == Page::Weather) {
         for (uint8_t i = 0; i < weather::LOCATION_COUNT; ++i) {
             const char *name = i == 0 ? "Chiang Mai" : i == 1 ? "Bangkok" : "WiFi area";
@@ -127,9 +146,14 @@ void Dashboard::drawLayout()
         for (uint8_t i = 0; i < 4; ++i) {
             button(6 + i * 78, GROUP_TAB_Y, 73, GROUP_TAB_HEIGHT, groups[i], i == group_);
         }
-    } else {
+    } else if (page_ == Page::Rgb) {
         label("LDR raw ADC (0-4095)", 8, 77, TFT_LIGHTGREY, 1);
         button(200, 64, 114, 22, rgbEnabled_ ? "STOP RGB" : "START RGB", rgbEnabled_);
+    } else {
+        char text[48];
+        snprintf(text, sizeof(text), "DHT%u sensor | DATA GPIO%u", app::DHT_SENSOR_MODEL, cyd::SAFE_SENSOR_PIN);
+        label(text, 8, 62, TFT_CYAN, 2);
+        label("Local temperature and humidity", 8, 84, TFT_LIGHTGREY, 2);
     }
     layoutDirty_ = false;
     dataDirty_ = true;
@@ -142,7 +166,7 @@ void Dashboard::drawWeather(const weather::Snapshot &data, bool serviceReady)
     if (location_ == 2) {
         snprintf(text, sizeof(text), "IP approx: %.32s", data.position.city[0] ? data.position.city : "locating...");
         label(text, 6, 104, TFT_YELLOW, 1);
-    } else label("City centre weather / model data", 6, 104, TFT_LIGHTGREY, 1);
+    } else label("City centre weather | OpenWeather", 6, 104, TFT_LIGHTGREY, 1);
 
     const bool airPage = group_ == 3;
     const bool valid = airPage ? data.air.valid : data.conditions.valid;
@@ -152,7 +176,7 @@ void Dashboard::drawWeather(const weather::Snapshot &data, bool serviceReady)
     if (!valid) {
         weatherLabel(data.pending ? "Loading data..." : "Data unavailable", 133, TFT_YELLOW);
         label("Choose a location / tap REFRESH", 8, 169, TFT_LIGHTGREY, 2);
-        label("Open-Meteo / CAMS", 8, 205, TFT_LIGHTGREY, 1);
+        label("OpenWeather", 8, 205, TFT_LIGHTGREY, 1);
     } else {
         const auto &c = data.conditions;
         if (group_ == 0) {
@@ -162,41 +186,50 @@ void Dashboard::drawWeather(const weather::Snapshot &data, bool serviceReady)
             weatherLabel(text, 155);
             weatherLabel(weather::conditionName(c.code), 187);
         } else if (group_ == 1) {
-            snprintf(text, sizeof(text), "Rain %.2f mm / %lu min", c.rain, static_cast<unsigned long>(c.intervalSeconds / 60));
+            snprintf(text, sizeof(text), "Rain %.2f mm/h", c.rain);
             weatherLabel(text, 129);
             snprintf(text, sizeof(text), "Cloud cover %.0f %%", c.clouds);
             weatherLabel(text, 165);
-            label("Rain amount during model interval", 8, 190, TFT_LIGHTGREY, 2);
+            label("Rain rate from OpenWeather", 8, 190, TFT_LIGHTGREY, 2);
         } else if (group_ == 2) {
             snprintf(text, sizeof(text), "Wind %.1f km/h", c.windSpeed);
             weatherLabel(text, 129);
-            snprintf(text, sizeof(text), "From %s (%.0f deg)", weather::windCompass(c.windDirection), c.windDirection);
+            if (std::isfinite(c.windDirection))
+                snprintf(text, sizeof(text), "From %s (%.0f deg)", weather::windCompass(c.windDirection), c.windDirection);
+            else snprintf(text, sizeof(text), "Direction unavailable");
             weatherLabel(text, 165);
             label("Direction the wind blows from", 8, 190, TFT_LIGHTGREY, 2);
         } else {
             snprintf(text, sizeof(text), "PM2.5: %.1f ug/m3", data.air.pm25);
             weatherLabel(text, 133);
-            label("CAMS atmospheric model", 8, 166, TFT_LIGHTGREY, 2);
-            snprintf(text, sizeof(text), "Model interval: %lu min", static_cast<unsigned long>(data.air.intervalSeconds / 60));
-            label(text, 8, 190, TFT_LIGHTGREY, 2);
+            label("OpenWeather Air Pollution", 8, 166, TFT_LIGHTGREY, 2);
+            label("Current air pollution data", 8, 190, TFT_LIGHTGREY, 2);
         }
         char stamp[32];
         localTimeText(stamp, sizeof(stamp), airPage ? data.air.timestamp : c.timestamp,
                       data.position.utcOffsetSeconds, "%d/%m %H:%M");
-        snprintf(text, sizeof(text), "Model %s%s | Open-Meteo/CAMS", stamp, stale ? " (STALE)" : "");
+        snprintf(text, sizeof(text), "Data %s%s | OpenWeather", stamp, stale ? " (STALE)" : "");
         label(text, 8, 205, stale ? TFT_YELLOW : TFT_LIGHTGREY, 1);
     }
     const char *state = !serviceReady ? "Weather service unavailable"
                       : !connected_ ? "Connect WiFi to get weather"
                       : time(nullptr) < 1704067200 ? "Synchronizing clock..."
                       : data.pending ? "Updating..."
-                      : failed ? "Update failed; retry scheduled" : "Updates every 10 minutes";
+                      : failed ? (data.error[0] ? data.error : "Update failed; retry scheduled") : "Updates every 10 minutes";
     label(state, 8, 216, failed ? TFT_YELLOW : TFT_LIGHTGREY, 1);
+    drawWeatherClock(data);
+    button(REFRESH_X, REFRESH_Y, REFRESH_WIDTH, REFRESH_HEIGHT, "REFRESH", data.pending);
+}
+
+void Dashboard::drawWeatherClock(const weather::Snapshot &data)
+{
+    // Update only the clock; do not clear the adjacent REFRESH button.
+    tft_.fillRect(0, 222, REFRESH_X - 1, 18, BACKGROUND);
+    char text[32];
     if (weather::validPosition(data.position)) {
         localTimeText(text, sizeof(text), time(nullptr), data.position.utcOffsetSeconds, "%d/%m/%Y %H:%M:%S");
     } else snprintf(text, sizeof(text), "Local time: --");
     label(text, 8, 230);
-    button(REFRESH_X, REFRESH_Y, REFRESH_WIDTH, REFRESH_HEIGHT, "REFRESH", data.pending);
 }
 
 void Dashboard::drawLed(int16_t x, const char *name, uint16_t color, bool on)
@@ -222,9 +255,9 @@ void Dashboard::drawRgb()
 {
     tft_.setTextDatum(MC_DATUM);
     tft_.setTextColor(rgbEnabled_ ? ledColor_ : TFT_LIGHTGREY, BACKGROUND);
-    tft_.setTextSize(2);
+    tft_.setTextSize(3);
     tft_.setTextPadding(280);
-    tft_.drawNumber(raw_, 160, 113, 4);
+    tft_.drawNumber(raw_, 160, 113, 2);
     tft_.setTextPadding(0);
     tft_.setTextSize(1);
     tft_.fillRect(0, 140, 320, 24, BACKGROUND);
@@ -237,8 +270,50 @@ void Dashboard::drawRgb()
     drawLed(266, "BLUE", TFT_BLUE, rgbEnabled_ && ledColor_ == TFT_BLUE);
 }
 
+void Dashboard::drawDht()
+{
+    tft_.fillRect(0, WEATHER_CONTENT_Y, 320, 240 - WEATHER_CONTENT_Y, BACKGROUND);
+    char text[48];
+    const bool ready = dhtReading_.status == dhtsensor::Status::Ready;
+    if (ready) snprintf(text, sizeof(text), "Temp %.1f C", dhtReading_.temperature);
+    else snprintf(text, sizeof(text), "Temp --.- C");
+    weatherLabel(text, 122, ready ? TFT_WHITE : TFT_LIGHTGREY);
+    if (ready) snprintf(text, sizeof(text), "Humidity %.1f %%", dhtReading_.humidity);
+    else snprintf(text, sizeof(text), "Humidity --.- %%");
+    weatherLabel(text, 158, ready ? TFT_WHITE : TFT_LIGHTGREY);
+
+    if (dhtReading_.status == dhtsensor::Status::Waiting) {
+        label("Waiting for first sensor reading...", 8, 190, TFT_YELLOW, 2);
+    } else if (!ready) {
+        label("No sensor / sensor error", 8, 190, TFT_RED, 2);
+        label("Check DATA, VCC, GND and DHT type", 8, 211, TFT_YELLOW, 2);
+    } else {
+        drawDhtAge();
+        label("Measures here | Updates every 2 s", 8, 211, TFT_LIGHTGREY, 2);
+    }
+    label("< Swipe left / right to change page >", 8, 233, TFT_LIGHTGREY, 1);
+}
+
+void Dashboard::drawDhtAge()
+{
+    tft_.fillRect(0, 180, 320, 20, BACKGROUND);
+    char text[48];
+    snprintf(text, sizeof(text), "Sensor OK | Read %lu s ago",
+             static_cast<unsigned long>((millis() - dhtReading_.attemptedAtMs) / 1000));
+    label(text, 8, 190, TFT_GREEN, 2);
+}
+
+void Dashboard::swipe(touchgesture::Kind direction)
+{
+    const uint8_t current = static_cast<uint8_t>(page_);
+    // Swiping left reveals the next page; right returns to the previous page.
+    page_ = static_cast<Page>((current + (direction == touchgesture::Kind::SwipeLeft ? 1 : 2)) % 3);
+    layoutDirty_ = true;
+}
+
 void Dashboard::beginCalibration()
 {
+    gesture_.cancel();
     calibrating_ = true;
     waitRelease_ = true;
     calibrationStep_ = calibrationSamples_ = 0;
@@ -304,14 +379,25 @@ void Dashboard::pollTouch(uint32_t now, WeatherService &weather)
         beginCalibration();
         return;
     }
-    if (!down) { touchHeld_ = false; return; }
+    if (!down) {
+        if (touchHeld_) {
+            touchHeld_ = false;  // Ignore release of the last calibration point.
+            gesture_.cancel();
+            return;
+        }
+        const auto event = gesture_.release(now);
+        if (event.kind == touchgesture::Kind::Tap) tap(event.position.x, event.position.y, weather);
+        else if (event.kind == touchgesture::Kind::SwipeLeft || event.kind == touchgesture::Kind::SwipeRight) {
+            swipe(event.kind);
+        }
+        return;
+    }
     if (touchHeld_) return;
     const auto raw = touch_.getPoint();
     if (raw.z < 300) return;
-    touchHeld_ = true;
     const auto position = calibration_.project({static_cast<float>(raw.x), static_cast<float>(raw.y)});
     if (position.x >= 0 && position.x < 320 && position.y >= 0 && position.y < 240) {
-        tap(position.x, position.y, weather);
+        gesture_.track(position.x, position.y, now);
     }
 }
 
@@ -319,9 +405,14 @@ void Dashboard::tap(int16_t x, int16_t y, WeatherService &weather)
 {
     if (x >= 283 && x < 317 && y < HEADER_HEIGHT) { beginCalibration(); return; }
     if (y >= PAGE_TAB_Y && y < PAGE_TAB_Y + PAGE_TAB_HEIGHT) {
-        if (x >= 6 && x < 157) page_ = Page::Weather;
-        else if (x >= 163 && x < 314) page_ = Page::Rgb;
-        layoutDirty_ = true;
+        for (uint8_t i = 0; i < 3; ++i) {
+            const int16_t left = PAGE_TAB_X + i * PAGE_TAB_STEP;
+            if (x >= left && x < left + PAGE_TAB_WIDTH) {
+                page_ = static_cast<Page>(i);
+                layoutDirty_ = true;
+                break;
+            }
+        }
     } else if (page_ == Page::Rgb && x >= 200 && x < 314 && y >= 64 && y < 86) {
         setRgbEnabled(!rgbEnabled_);
     } else if (page_ == Page::Weather) {
@@ -346,10 +437,24 @@ void Dashboard::poll(uint32_t now, WeatherService &weather)
     pollTouch(now, weather);
     if (calibrating_) return;
     if (layoutDirty_) drawLayout();
-    if (dataDirty_ || now - lastFrameAt_ >= 1000) {
-        if (page_ == Page::Weather) drawWeather(weather.get(location_), weather.ready());
-        else drawRgb();
-        dataDirty_ = false;
-        lastFrameAt_ = now;
-    }
+    const bool clockTick = now - lastFrameAt_ >= 1000;
+    if (!dataDirty_ && !clockTick) return;
+    if (page_ == Page::Weather) {
+        const auto &data = weather.get(location_);
+        const bool airPage = group_ == 3;
+        const bool valid = airPage ? data.air.valid : data.conditions.valid;
+        const bool failed = airPage ? data.airFailed : data.weatherFailed;
+        const uint32_t received = airPage ? data.air.receivedAtMs : data.conditions.receivedAtMs;
+        const bool stale = valid && (failed || !connected_ || now - received > weather::REFRESH_INTERVAL_MS + 60000);
+        if (dataDirty_ || lastWeatherRevision_ != data.revision || lastWeatherStale_ != stale) {
+            drawWeather(data, weather.ready());
+            lastWeatherRevision_ = data.revision;
+            lastWeatherStale_ = stale;
+        } else if (clockTick) drawWeatherClock(data);
+    } else if (page_ == Page::Rgb) {
+        if (dataDirty_) drawRgb();
+    } else if (dataDirty_) drawDht();
+    else if (clockTick && dhtReading_.status == dhtsensor::Status::Ready) drawDhtAge();
+    dataDirty_ = false;
+    lastFrameAt_ = now;
 }

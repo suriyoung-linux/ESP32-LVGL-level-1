@@ -9,6 +9,8 @@
 #include "board_config.h"
 #include "touch_calibration.h"
 #include "weather_service.h"
+#include "dht_sensor.h"
+#include "touch_gesture.h"
 
 class Dashboard {
 public:
@@ -16,12 +18,13 @@ public:
     void poll(uint32_t now, WeatherService &weather);
     void setNetwork(const char *status, const IPAddress &ip, bool connected);
     void updateLdr(uint16_t raw, uint32_t millivolts, const char *resistance, uint16_t color);
+    void updateDht(const dhtsensor::Reading &reading);
     bool rgbEnabled() const { return rgbEnabled_; }
     void setRgbEnabled(bool enabled);
     uint8_t selectedLocation() const { return location_; }
 
 private:
-    enum class Page { Weather, Rgb };
+    enum class Page { Weather, Rgb, Dht };
     TFT_eSPI tft_;
     SPIClass touchSpi_{VSPI};
     XPT2046_Touchscreen touch_{cyd::TOUCH_PIN_CS, cyd::TOUCH_PIN_IRQ};
@@ -36,9 +39,13 @@ private:
     uint16_t raw_ = 0, ledColor_ = TFT_BLUE;
     uint32_t millivolts_ = 0;
     char resistance_[24] = "R: N/A";
+    dhtsensor::Reading dhtReading_;
     bool layoutDirty_ = true, dataDirty_ = true;
     uint32_t lastFrameAt_ = 0, lastTouchAt_ = 0;
+    uint32_t lastWeatherRevision_ = UINT32_MAX;
+    bool lastWeatherStale_ = false;
     bool touchHeld_ = false;
+    touchgesture::Tracker gesture_;
     touchcal::Calibration calibration_;
     touchcal::Point calibrationPoints_[4];
     bool calibrating_ = false, waitRelease_ = false;
@@ -48,7 +55,11 @@ private:
     void drawHeader();
     void drawLayout();
     void drawWeather(const weather::Snapshot &data, bool serviceReady);
+    void drawWeatherClock(const weather::Snapshot &data);
     void drawRgb();
+    void drawDht();
+    void drawDhtAge();
+    void swipe(touchgesture::Kind direction);
     void drawLed(int16_t x, const char *name, uint16_t color, bool on);
     void button(int16_t x, int16_t y, int16_t width, int16_t height, const char *label, bool active);
     void label(const char *text, int16_t x, int16_t y, uint16_t color = TFT_WHITE, uint8_t font = 2);

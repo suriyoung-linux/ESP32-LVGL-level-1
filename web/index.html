@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101b2d">
+<title>ESP32 · Weather & Sensors</title>
+<style>
+:root{color-scheme:dark;--bg:#101b2d;--panel:#19263b;--line:#304058;--text:#f3f6fc;--muted:#acbcd3;--cyan:#7fe5dc;--bad:#ff9d98;--warn:#ffd68b}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,"Leelawadee UI",sans-serif;line-height:1.6}main{max-width:1120px;margin:auto;padding:32px 22px 48px}header{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-bottom:26px}h1{font-size:clamp(25px,4vw,37px);line-height:1.3;margin:4px 0}h2{font-size:20px;margin:0}p{margin:0}.eyebrow{font-size:12px;letter-spacing:2px;color:var(--cyan);font-weight:700}.muted,small{color:var(--muted)}small{font-size:13px}.badge{display:inline-flex;align-items:center;gap:8px;border:1px solid var(--line);border-radius:24px;padding:7px 13px;font-size:13px;white-space:nowrap}.badge:before{content:"";width:7px;height:7px;background:currentColor;border-radius:50%}.ok{color:var(--cyan)}.warn{color:var(--warn)}.bad{color:var(--bad)}.section{border:1px solid var(--line);background:var(--panel);border-radius:18px;padding:24px;margin:18px 0}.section-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.metric{padding:18px;background:var(--bg);border-radius:12px;min-width:0}.metric .label{font-size:14px;color:var(--muted)}.number{font-size:clamp(26px,4vw,40px);font-weight:650;line-height:1.35;margin:7px 0;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.unit{font-size:15px;font-weight:400;color:var(--muted);margin-left:4px}.note{font-size:13px;color:var(--muted);margin-top:16px}.status{font-size:14px;min-height:23px;margin-top:12px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}button,select{font:inherit;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:9px;padding:9px 13px;min-height:44px}button{cursor:pointer}button:hover{border-color:var(--cyan)}button:disabled{opacity:.5;cursor:wait}button:focus-visible,select:focus-visible{outline:2px solid var(--cyan);outline-offset:3px}.primary{background:var(--cyan);color:var(--bg);font-weight:650;border-color:var(--cyan)}.leds{display:flex;gap:14px;align-items:center;margin-top:14px}.led{display:flex;gap:7px;align-items:center;color:var(--muted);font-size:13px}.dot{width:12px;height:12px;border-radius:50%;background:#3b4657}.dot.on[data-color=RED]{background:#ff8686;box-shadow:0 0 12px #ff868680}.dot.on[data-color=GREEN]{background:#8cebaf;box-shadow:0 0 12px #8cebaf80}.dot.on[data-color=BLUE]{background:#8cbeff;box-shadow:0 0 12px #8cbeff80}footer{font-size:12px;color:var(--muted);display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap}.details{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px;font-size:12px;color:var(--muted)}@media(max-width:650px){main{padding:22px 14px}header,.section-head{align-items:flex-start;flex-direction:column;gap:12px}.section{padding:18px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.toolbar{width:100%}select{flex:1}.number{font-size:30px}}@media(max-width:370px){.grid,.metrics{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<main>
+<header><div><div class="eyebrow">ESP32 CYD · LIVE DASHBOARD</div><h1>อากาศและเซนเซอร์ของคุณ</h1><p class="muted">ข้อมูลจากบอร์ดในเครือข่าย WiFi ของคุณ</p></div><span id="connection" class="badge warn" role="status">กำลังเชื่อมต่อบอร์ด</span></header>
+<section class="section" aria-labelledby="sensor-title">
+<div class="section-head"><div><h2 id="sensor-title">สภาพแวดล้อมที่บอร์ด</h2><small id="dht-model">DHT · GPIO27</small></div><span id="dht-state" class="badge warn">รอข้อมูลเซนเซอร์</span></div>
+<div class="grid"><div class="metric"><div class="label">อุณหภูมิจากเซนเซอร์</div><div class="number"><span id="dht-temp">—</span><span class="unit">°C</span></div></div><div class="metric"><div class="label">ความชื้นจากเซนเซอร์</div><div class="number"><span id="dht-humidity">—</span><span class="unit">%</span></div></div></div>
+<p id="sensor-note" class="status muted" role="status">กำลังอ่านข้อมูลจาก ESP32…</p>
+</section>
+<section class="section" aria-labelledby="weather-title">
+<div class="section-head"><div><h2 id="weather-title">อากาศจาก OpenWeather</h2><small>ข้อมูลตามพิกัดของพื้นที่ที่เลือก</small></div><div class="toolbar"><select id="location" aria-label="เลือกพื้นที่"><option value="chiang_mai">เชียงใหม่</option><option value="bangkok">กรุงเทพฯ</option><option value="home">พื้นที่ WiFi โดยประมาณ</option></select><button id="weather-reload">ตรวจข้อมูล</button></div></div>
+<div class="metrics"><div class="metric"><div class="label">อุณหภูมิ</div><div class="number"><span id="weather-temp">—</span><span class="unit">°C</span></div></div><div class="metric"><div class="label">ความชื้น</div><div class="number"><span id="weather-humidity">—</span><span class="unit">%</span></div></div><div class="metric"><div class="label">PM2.5</div><div class="number"><span id="pm25">—</span><span class="unit">µg/m³</span></div></div><div class="metric"><div class="label">อัตราฝน</div><div class="number"><span id="rain">—</span><span class="unit">mm/h</span></div></div><div class="metric"><div class="label">เมฆปกคลุม</div><div class="number"><span id="clouds">—</span><span class="unit">%</span></div></div><div class="metric"><div class="label">ความเร็วลม</div><div class="number"><span id="wind">—</span><span class="unit">km/h</span></div><small id="wind-direction">ทิศลม —</small></div></div>
+<p id="weather-state" class="status muted" role="status">กำลังโหลดข้อมูลอากาศ…</p><p id="weather-position" class="note">—</p><p id="weather-time" class="note">—</p>
+</section>
+<section class="section" aria-labelledby="ldr-title"><div class="section-head"><div><h2 id="ldr-title">แสงและไฟ RGB</h2><small>LDR บนบอร์ด · GPIO34</small></div><button id="rgb-toggle" class="primary" disabled>รอสถานะ RGB</button></div>
+<div class="metrics"><div class="metric"><div class="label">ค่าดิบ LDR</div><div class="number" id="ldr-raw">—</div><small>ADC 0–4095</small></div><div class="metric"><div class="label">แรงดันที่วัด</div><div class="number"><span id="ldr-voltage">—</span><span class="unit">V</span></div></div><div class="metric"><div class="label">ความต้านทานโดยประมาณ</div><div class="number"><span id="ldr-resistance">—</span><span class="unit">kΩ</span></div></div></div>
+<div class="leds" aria-label="สถานะไฟ RGB"><span class="led"><i class="dot" data-color="RED"></i>แดง</span><span class="led"><i class="dot" data-color="GREEN"></i>เขียว</span><span class="led"><i class="dot" data-color="BLUE"></i>น้ำเงิน</span><span id="rgb-state" class="muted">—</span></div><p id="rgb-message" class="status muted" role="status"></p>
+</section>
+<footer><span id="board-info">ESP32 · รอข้อมูลบอร์ด</span><span id="updated">ยังไม่ได้รับข้อมูล</span></footer><div class="details"><span id="heap-info">—</span><span id="stack-info">—</span></div>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const value=(id,n,d=1)=>{$(id).textContent=typeof n==='number'&&Number.isFinite(n)?n.toFixed(d):'—';};
+const badge=(id,text,tone)=>{$(id).textContent=text;$(id).className='badge '+tone;};
+let rgbEnabled=null,rgbBusy=false,timer=null,weatherAbort=null,weatherGeneration=0,lastWeatherPoll=0;
+async function request(url,options={},allowUnavailable=false){
+ const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),5000);
+ const forward=()=>controller.abort();
+ if(options.signal){if(options.signal.aborted)controller.abort();else options.signal.addEventListener('abort',forward,{once:true});}
+ try{const response=await fetch(url,{...options,signal:controller.signal,cache:'no-store'});const data=await response.json();if(!response.ok&&!(allowUnavailable&&(response.status===202||response.status===503)&&data.status))throw Error(data.error||'HTTP '+response.status);return data;}
+ finally{clearTimeout(timeout);if(options.signal)options.signal.removeEventListener('abort',forward);}
+}
+function renderRgb(data){rgbEnabled=typeof data.enabled==='boolean'?data.enabled:null;$('rgb-toggle').disabled=rgbBusy||rgbEnabled===null;$('rgb-toggle').textContent=rgbEnabled===null?'รอสถานะ RGB':rgbEnabled?'หยุดไฟ RGB':'เปิดไฟ RGB';$('rgb-state').textContent=rgbEnabled===null?'ไม่มีข้อมูล':rgbEnabled?'ทำงานตามค่า LDR':'หยุดแล้ว';document.querySelectorAll('.dot').forEach(dot=>dot.classList.toggle('on',rgbEnabled===true&&dot.dataset.color===data.led_color));}
+function renderSensors(data){
+ const d=data.dht,l=data.ldr;if(!d||!l||!data.rgb)throw Error('ข้อมูลเซนเซอร์ไม่ครบ');
+ $('dht-model').textContent='DHT'+d.model+' · GPIO'+d.pin;
+ const ready=d.valid===true;value('dht-temp',ready?d.temperature_c:null);value('dht-humidity',ready?d.relative_humidity_percent:null);
+ badge('dht-state',ready?'อ่านจากเซนเซอร์จริง':d.status==='waiting'?'รอการอ่านครั้งแรก':d.status==='stale'?'ข้อมูลเซนเซอร์เก่า':'อ่านเซนเซอร์ไม่ได้',ready?'ok':d.status==='waiting'?'warn':'bad');
+ $('sensor-note').textContent=ready?'อ่านล่าสุด '+Math.floor(d.age_ms/1000)+' วินาทีที่แล้ว':d.status==='waiting'?'รอเซนเซอร์พร้อมหลังเปิดบอร์ด':d.status==='stale'?'ยังไม่ได้รับค่ารอบใหม่จากเซนเซอร์':'ไม่มีอุปกรณ์เชื่อมต่อหรืออ่านค่ามีปัญหา ตรวจ DATA, VCC, GND และรุ่นเซนเซอร์';
+ value('ldr-raw',l.valid?l.raw_adc:null,0);value('ldr-voltage',l.valid?l.millivolts/1000:null,3);value('ldr-resistance',l.valid&&typeof l.resistance_ohms==='number'?l.resistance_ohms/1000:null,2);renderRgb(data.rgb);
+ badge('connection','เชื่อมต่อบอร์ดแล้ว','ok');$('updated').textContent='รับข้อมูล '+new Date().toLocaleTimeString('th-TH');
+}
+function sensorOffline(){badge('connection','ติดต่อบอร์ดไม่ได้','bad');badge('dht-state','ไม่มีข้อมูลล่าสุด','bad');['dht-temp','dht-humidity','ldr-raw','ldr-voltage','ldr-resistance'].forEach(id=>value(id,null));$('sensor-note').textContent='ตรวจว่าอุปกรณ์อยู่ใน WiFi เดียวกับ ESP32 แล้วลองอีกครั้ง';$('weather-state').textContent='การเชื่อมต่อขาดหาย · ข้อมูลอากาศที่แสดงเป็นข้อมูลรอบก่อน';$('weather-state').className='status warn';renderRgb({enabled:null});}
+function renderWeather(data){
+ const s=data.status;if(!s||!data.weather||!data.air_quality||!data.location)throw Error('ข้อมูลอากาศไม่ครบ');
+ const c=data.weather,r=data.rain_cloud,w=data.wind;
+ value('weather-temp',s.weather_available?c.temperature_c:null);value('weather-humidity',s.weather_available?c.relative_humidity_percent:null,0);value('rain',s.weather_available?r.rain_rate_mm_per_hour:null,2);value('clouds',s.weather_available?r.cloud_cover_percent:null,0);value('wind',s.weather_available?w.speed_kmh:null);value('pm25',s.air_available?data.air_quality.pm2_5_ug_m3:null);
+ $('wind-direction').textContent=typeof w.from_degrees==='number'?'ลมมาจาก '+w.from_compass+' ('+Math.round(w.from_degrees)+'°)':'ไม่มีข้อมูลทิศลม';
+ const messages=[];if(data.pending)messages.push('กำลังอัปเดต');if(s.weather_available)messages.push(c.description||'มีข้อมูลอากาศ');else messages.push('ยังไม่มีข้อมูลอากาศ');if(s.weather_stale)messages.push('อากาศเป็นข้อมูลเก่า');if(!s.air_available)messages.push('ยังไม่มีค่า PM2.5');if(s.air_stale)messages.push('PM2.5 เป็นข้อมูลเก่า');if(data.error)messages.push(data.error);
+ $('weather-state').textContent=messages.join(' · ');$('weather-state').className='status '+(s.weather_stale||s.air_stale||data.error?'warn':'muted');
+ const p=data.location;$('weather-position').textContent=p.resolved?(p.approximate?'ตำแหน่งจาก IP โดยประมาณ: '+(p.city||'พื้นที่ WiFi'):'พิกัดกลางเมือง')+' · '+Number(p.latitude).toFixed(4)+', '+Number(p.longitude).toFixed(4):'กำลังหาตำแหน่งพื้นที่ WiFi';
+ const stamp=epoch=>epoch?new Date((epoch+(p.utc_offset_seconds||0))*1000).toLocaleString('th-TH',{timeZone:'UTC'}):'—';
+ $('weather-time').textContent='เวลาข้อมูลในพื้นที่ · อากาศ '+stamp(s.weather_data_time_utc)+' · PM2.5 '+stamp(s.air_data_time_utc);
+}
+async function loadWeather(){
+ const generation=++weatherGeneration;const id=$('location').value;if(weatherAbort)weatherAbort.abort();weatherAbort=new AbortController();$('weather-reload').disabled=true;
+ try{const data=await request('/api/weather?location='+encodeURIComponent(id),{signal:weatherAbort.signal},true);if(generation===weatherGeneration)renderWeather(data);}
+ catch(error){if(generation!==weatherGeneration)return;['weather-temp','weather-humidity','rain','clouds','wind','pm25'].forEach(id=>value(id,null));$('weather-state').textContent='ไม่สามารถโหลดข้อมูลอากาศจากบอร์ดได้';$('weather-state').className='status bad';$('weather-time').textContent='ไม่มีข้อมูลล่าสุด';$('wind-direction').textContent='ทิศลม —';}
+ finally{if(generation===weatherGeneration){$('weather-reload').disabled=false;lastWeatherPoll=Date.now();}}
+}
+function renderStatus(data){$('board-info').textContent='ESP32 · Firmware '+data.firmware_version+' · '+data.ipv4;$('heap-info').textContent='RAM ว่าง '+Math.round(data.heap_free_bytes/1024)+' KB · ต่ำสุด '+Math.round(data.heap_min_free_bytes/1024)+' KB';$('stack-info').textContent=typeof data.weather_stack_min_free_bytes==='number'?'Weather stack ว่างต่ำสุด '+data.weather_stack_min_free_bytes+' bytes':'Weather worker รอเริ่มงาน';}
+async function poll(){
+ if(document.hidden)return;
+ try{const data=await request('/api/sensors');renderSensors(data);}catch(error){sensorOffline();}
+ try{renderStatus(await request('/api/status'));}catch(error){$('board-info').textContent='ESP32 · ยังไม่ได้รับสถานะล่าสุด';$('heap-info').textContent='—';$('stack-info').textContent='—';}
+ if(Date.now()-lastWeatherPoll>=15000)await loadWeather();
+ if(!document.hidden)timer=setTimeout(poll,2000);
+}
+$('location').addEventListener('change',()=>{['weather-temp','weather-humidity','rain','clouds','wind','pm25'].forEach(id=>value(id,null));$('weather-state').textContent='กำลังโหลดพื้นที่ที่เลือก…';$('weather-position').textContent='—';$('weather-time').textContent='—';$('wind-direction').textContent='ทิศลม —';loadWeather();});
+$('weather-reload').addEventListener('click',loadWeather);
+$('rgb-toggle').addEventListener('click',async()=>{if(rgbBusy||rgbEnabled===null)return;rgbBusy=true;$('rgb-toggle').disabled=true;const enabled=!rgbEnabled;try{const data=await request('/api/rgb',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled})});renderRgb({...data,led_color:null});$('rgb-message').textContent=enabled?'เปิดการควบคุม RGB ตาม LDR แล้ว':'หยุดไฟ RGB แล้ว';}catch(error){$('rgb-message').textContent='ส่งคำสั่งไม่สำเร็จ กรุณาตรวจการเชื่อมต่อ';}finally{rgbBusy=false;$('rgb-toggle').disabled=rgbEnabled===null;}});
+let polling=false;
+const runPoll=poll;poll=async function(){if(polling)return;polling=true;try{await runPoll();}finally{polling=false;}};
+document.addEventListener('visibilitychange',()=>{clearTimeout(timer);if(!document.hidden){lastWeatherPoll=0;poll();}});
+poll();
+</script>
+</body>
+</html>

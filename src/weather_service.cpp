@@ -5,10 +5,14 @@
 #include <WiFiClientSecure.h>
 #include <ctime>
 #include "api_root_certificates.h"
+#include "weather_credentials.h"
+#include "weather_json.h"
 
 namespace {
-bool fetchJson(const String &url, const char *ca, DynamicJsonDocument &doc, char *error, size_t errorSize)
+bool fetchJson(const String &url, const char *ca, DynamicJsonDocument &doc, char *error, size_t errorSize, weather::ResponseKind kind)
 {
+    StaticJsonDocument<weather::FILTER_JSON_CAPACITY> filter;
+    weather::responseFilter(filter, kind);
     WiFiClientSecure client;
     client.setCACert(ca);
     client.setHandshakeTimeout(8);
@@ -23,11 +27,14 @@ bool fetchJson(const String &url, const char *ca, DynamicJsonDocument &doc, char
     }
     const int status = http.GET();
     if (status != HTTP_CODE_OK) {
-        snprintf(error, errorSize, "HTTP %d", status);
+        if (status == 401) snprintf(error, errorSize, "HTTP 401: API key invalid/not active");
+        else if (status == 429) snprintf(error, errorSize, "HTTP 429: API limit reached");
+        else snprintf(error, errorSize, "HTTP %d", status);
         http.end();
         return false;
     }
-    const DeserializationError result = deserializeJson(doc, http.getStream());
+    const DeserializationError result = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter),
+                                                       DeserializationOption::NestingLimit(8));
     http.end();
     if (result || doc["error"].as<bool>()) {
         snprintf(error, errorSize, "JSON: %s", result ? result.c_str() : "provider error");
@@ -38,7 +45,7 @@ bool fetchJson(const String &url, const char *ca, DynamicJsonDocument &doc, char
 
 String coordinates(const weather::Position &p)
 {
-    return "latitude=" + String(p.latitude, 6) + "&longitude=" + String(p.longitude, 6);
+    return "lat=" + String(p.latitude, 6) + "&lon=" + String(p.longitude, 6);
 }
 }
 
@@ -67,7 +74,7 @@ bool WeatherService::begin()
     cache_[2].position.approximate = true;
     jobs_ = xQueueCreate(weather::LOCATION_COUNT, sizeof(Job));
     results_ = xQueueCreate(weather::LOCATION_COUNT, sizeof(Result));
-    if (!jobs_ || !results_ || xTaskCreate(worker, "weather-api", 12288, this, 1, nullptr) != pdPASS) {
+    if (!jobs_ || !results_ || xTaskCreate(worker, "weather-api", weather::WORKER_STACK_BYTES, this, 1, nullptr) != pdPASS) {
         if (jobs_) vQueueDelete(jobs_);
         if (results_) vQueueDelete(results_);
         jobs_ = results_ = nullptr;
@@ -91,6 +98,7 @@ bool WeatherService::request(uint8_t location, bool force)
                            now - homeResolvedAtMs_ >= weather::GEO_REFRESH_INTERVAL_MS);
     const Job job{location, data.position, resolve, homeGeneration_};
     if (xQueueSend(jobs_, &job, 0) != pdPASS) return false;
+    ++data.revision;
     data.pending = true;
     data.attempted = true;
     data.lastAttemptAtMs = now;
@@ -100,7 +108,9 @@ bool WeatherService::request(uint8_t location, bool force)
 void WeatherService::invalidateHome()
 {
     ++homeGeneration_;  // ไม่รับผลของตำแหน่งจากการเชื่อมต่อเครือข่ายเดิม
+    const uint32_t revision = cache_[2].revision + 1;
     cache_[2] = weather::Snapshot{};
+    cache_[2].revision = revision;
     cache_[2].position.approximate = true;
     homeResolvedAtMs_ = 0;
 }
@@ -111,7 +121,9 @@ void WeatherService::poll()
     Result result;
     while (xQueueReceive(results_, &result, 0) == pdPASS) {
         if (result.location == 2 && result.generation != homeGeneration_) continue;
+        workerStackMinFreeBytes_ = result.stackFreeBytes;
         auto &previous = cache_[result.location];
+        ++previous.revision;
         const auto &fresh = result.snapshot;
         if (weather::validPosition(fresh.position)) {
             if (result.location == 2 && weather::validPosition(previous.position) &&
@@ -148,22 +160,23 @@ void WeatherService::worker(void *context)
         result.generation = job.generation;
         auto &data = result.snapshot;
         data.position = job.position;
-        DynamicJsonDocument json(4096);
+        DynamicJsonDocument json(weather::PROVIDER_JSON_CAPACITY);
         if (WiFi.status() != WL_CONNECTED) {
             snprintf(data.error, sizeof(data.error), "WiFi unavailable");
+        } else if (OPENWEATHER_API_KEY[0] == '\0') {
+            snprintf(data.error, sizeof(data.error), "Set OpenWeather API key in secrets.h");
         } else if (job.resolvePosition &&
                    (!fetchJson("https://ipwho.is/?fields=success,latitude,longitude,city,timezone", GEO_ROOT_CA,
-                               json, data.error, sizeof(data.error)) ||
+                               json, data.error, sizeof(data.error), weather::ResponseKind::Position) ||
                     !weather::parsePosition(json.as<JsonObjectConst>(), data.position))) {
             if (!data.error[0]) snprintf(data.error, sizeof(data.error), "WiFi/IP position unavailable");
         } else if (weather::validPosition(data.position)) {
             result.positionResolved = job.resolvePosition;
             json.clear();
-            const String params = coordinates(data.position);
-            const String url = "https://api.open-meteo.com/v1/forecast?" + params +
-                "&current=temperature_2m,relative_humidity_2m,weather_code,rain,showers,cloud_cover,wind_speed_10m,wind_direction_10m"
-                "&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm&timezone=auto&timeformat=unixtime&forecast_days=1";
-            if (fetchJson(url, WEATHER_ROOT_CA, json, data.error, sizeof(data.error))) {
+            const String params = coordinates(data.position) + "&appid=" + String(OPENWEATHER_API_KEY);
+            const String url = "https://api.openweathermap.org/data/2.5/weather?" + params +
+                "&units=metric&lang=en";
+            if (fetchJson(url, WEATHER_ROOT_CA, json, data.error, sizeof(data.error), weather::ResponseKind::Conditions)) {
                 if (!weather::parseConditions(json.as<JsonObjectConst>(), data.conditions, data.position)) {
                     snprintf(data.error, sizeof(data.error), "Weather fields unavailable");
                 } else {
@@ -172,9 +185,8 @@ void WeatherService::worker(void *context)
             }
             json.clear();
             char airError[64] = "";
-            if (fetchJson("https://air-quality-api.open-meteo.com/v1/air-quality?" + params +
-                          "&current=pm2_5&timezone=auto&timeformat=unixtime&forecast_days=1",
-                          WEATHER_ROOT_CA, json, airError, sizeof(airError))) {
+            if (fetchJson("https://api.openweathermap.org/data/2.5/air_pollution?" + params,
+                          WEATHER_ROOT_CA, json, airError, sizeof(airError), weather::ResponseKind::Air)) {
                 if (!weather::parseAir(json.as<JsonObjectConst>(), data.air)) {
                     snprintf(airError, sizeof(airError), "PM2.5 fields unavailable");
                 } else {
@@ -190,6 +202,7 @@ void WeatherService::worker(void *context)
         }
         data.weatherFailed = !data.conditions.valid;
         data.airFailed = !data.air.valid;
+        result.stackFreeBytes = uxTaskGetStackHighWaterMark(nullptr);  // ESP-IDF reports bytes.
         xQueueSend(self->results_, &result, portMAX_DELAY);
     }
 }

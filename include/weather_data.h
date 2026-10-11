@@ -27,7 +27,6 @@ struct Conditions {
     float windDirection = NAN;
     int code = -1;
     uint32_t timestamp = 0;
-    uint32_t intervalSeconds = 0;
     uint32_t receivedAtMs = 0;
 };
 
@@ -35,7 +34,6 @@ struct AirQuality {
     bool valid = false;
     float pm25 = NAN;
     uint32_t timestamp = 0;
-    uint32_t intervalSeconds = 0;
     uint32_t receivedAtMs = 0;
 };
 
@@ -43,6 +41,7 @@ struct Snapshot {
     Position position;
     Conditions conditions;
     AirQuality air;
+    uint32_t revision = 0;
     bool pending = false;
     bool weatherFailed = false;
     bool airFailed = false;
@@ -82,31 +81,36 @@ inline bool parsePosition(JsonObjectConst root, Position &out)
 
 inline bool parseConditions(JsonObjectConst root, Conditions &out, Position &position)
 {
-    JsonObjectConst c = root["current"];
-    for (const char *key : {"temperature_2m", "relative_humidity_2m", "rain", "showers",
-                            "cloud_cover", "wind_speed_10m", "wind_direction_10m"}) {
-        if (!number(c[key])) return false;
-    }
-    if (!c["weather_code"].is<int>() || !c["time"].is<uint32_t>() ||
-        !c["interval"].is<uint32_t>() || c["interval"].as<uint32_t>() == 0 ||
-        !root["utc_offset_seconds"].is<int32_t>() || !root["timezone"].is<const char *>()) return false;
+    if (!number(root["main"]["temp"]) || !number(root["main"]["humidity"]) ||
+        !number(root["clouds"]["all"]) || !number(root["wind"]["speed"]) ||
+        !root["weather"][0]["id"].is<int>() || !root["dt"].is<uint32_t>() ||
+        !root["timezone"].is<int32_t>() || !root["cod"].is<int>() || root["cod"].as<int>() != 200)
+        return false;
     Conditions data;
-    data.temperature = c["temperature_2m"];
-    data.humidity = c["relative_humidity_2m"];
-    data.rain = c["rain"].as<float>() + c["showers"].as<float>();
-    data.clouds = c["cloud_cover"];
-    data.windSpeed = c["wind_speed_10m"];
-    data.windDirection = c["wind_direction_10m"];
-    data.code = c["weather_code"];
-    data.timestamp = c["time"];
-    data.intervalSeconds = c["interval"];
-    if (data.humidity < 0 || data.humidity > 100 || data.clouds < 0 || data.clouds > 100 ||
-        data.rain < 0 || data.windSpeed < 0 || data.windDirection < 0 || data.windDirection > 360 ||
-        data.timestamp < 1704067200 || !std::isfinite(data.rain) || !std::isfinite(data.temperature) ||
-        !std::isfinite(data.windSpeed) || root["utc_offset_seconds"].as<int32_t>() < -14 * 3600 ||
-        root["utc_offset_seconds"].as<int32_t>() > 14 * 3600) return false;
-    position.utcOffsetSeconds = root["utc_offset_seconds"];
-    snprintf(position.timezone, sizeof(position.timezone), "%s", root["timezone"].as<const char *>());
+    data.temperature = root["main"]["temp"];
+    data.humidity = root["main"]["humidity"];
+    data.clouds = root["clouds"]["all"];
+    data.windSpeed = root["wind"]["speed"].as<float>() * 3.6f;  // metric m/s -> km/h
+    // OpenWeather omits rain when the phenomenon is absent; malformed rain is an error.
+    data.rain = 0;
+    if (root.containsKey("rain")) {
+        if (!number(root["rain"]["1h"])) return false;
+        data.rain = root["rain"]["1h"];  // mm/h, not daily accumulation
+    }
+    if (root["wind"].as<JsonObjectConst>().containsKey("deg")) {
+        if (!number(root["wind"]["deg"])) return false;
+        data.windDirection = root["wind"]["deg"];
+        if (!std::isfinite(data.windDirection) || data.windDirection < 0 || data.windDirection > 360)
+            return false;
+    }  // Missing wind direction stays NAN rather than inventing north.
+    data.code = root["weather"][0]["id"];
+    data.timestamp = root["dt"];
+    const int32_t offset = root["timezone"];
+    if (!std::isfinite(data.temperature) || !std::isfinite(data.rain) || !std::isfinite(data.windSpeed) ||
+        data.humidity < 0 || data.humidity > 100 || data.clouds < 0 || data.clouds > 100 ||
+        data.rain < 0 || data.windSpeed < 0 || data.timestamp < 1704067200 ||
+        offset < -14 * 3600 || offset > 14 * 3600) return false;
+    position.utcOffsetSeconds = offset;
     data.valid = true;
     out = data;
     return true;
@@ -114,14 +118,14 @@ inline bool parseConditions(JsonObjectConst root, Conditions &out, Position &pos
 
 inline bool parseAir(JsonObjectConst root, AirQuality &out)
 {
-    JsonObjectConst c = root["current"];
-    if (!number(c["pm2_5"]) || !std::isfinite(c["pm2_5"].as<float>()) || c["pm2_5"].as<float>() < 0 || !c["time"].is<uint32_t>() ||
-        !c["interval"].is<uint32_t>() || c["interval"].as<uint32_t>() == 0 ||
-        c["time"].as<uint32_t>() < 1704067200) return false;
+    JsonObjectConst c = root["list"][0];
+    if (!number(c["components"]["pm2_5"]) || !std::isfinite(c["components"]["pm2_5"].as<float>()) ||
+        c["components"]["pm2_5"].as<float>() < 0 || !c["dt"].is<uint32_t>() ||
+        c["dt"].as<uint32_t>() < 1704067200) return false;
     AirQuality data;
-    data.pm25 = c["pm2_5"];
-    data.timestamp = c["time"];
-    data.intervalSeconds = c["interval"];
+    data.pm25 = c["components"]["pm2_5"];
+    data.timestamp = c["dt"];
+    // Current Air Pollution does not report an averaging interval.
     data.valid = true;
     out = data;
     return true;
@@ -129,28 +133,31 @@ inline bool parseAir(JsonObjectConst root, AirQuality &out)
 
 inline const char *conditionName(int code)
 {
+    if (code >= 200 && code <= 232) return "Thunderstorm";
+    if (code >= 300 && code <= 321) return "Drizzle";
+    if (code >= 600 && code <= 622) return "Snow";
     switch (code) {
-        case 0: return "Clear sky";
-        case 1: return "Mainly clear";
-        case 2: return "Partly cloudy";
-        case 3: return "Overcast";
-        case 45: case 48: return "Fog";
-        case 51: return "Light drizzle";
-        case 53: return "Moderate drizzle";
-        case 55: return "Dense drizzle";
-        case 56: case 57: return "Freezing drizzle";
-        case 61: return "Light rain";
-        case 63: return "Moderate rain";
-        case 65: return "Heavy rain";
-        case 66: case 67: return "Freezing rain";
-        case 71: case 73: case 75: case 77: return "Snow";
-        case 80: return "Light showers";
-        case 81: return "Moderate showers";
-        case 82: return "Heavy showers";
-        case 85: case 86: return "Snow showers";
-        case 95: return "Thunderstorm";
-        case 97: return "Heavy thunderstorm";
-        case 96: case 99: return "Thunderstorm with hail";
+        case 500: return "Light rain";
+        case 501: return "Moderate rain";
+        case 502: return "Heavy rain";
+        case 503: return "Very heavy rain";
+        case 504: return "Extreme rain";
+        case 511: return "Freezing rain";
+        case 520: case 521: case 522: case 531: return "Rain showers";
+        case 701: return "Mist";
+        case 711: return "Smoke";
+        case 721: return "Haze";
+        case 731: case 761: return "Dust";
+        case 741: return "Fog";
+        case 751: return "Sand";
+        case 762: return "Volcanic ash";
+        case 771: return "Squalls";
+        case 781: return "Tornado";
+        case 800: return "Clear sky";
+        case 801: return "Few clouds";
+        case 802: return "Scattered clouds";
+        case 803: return "Broken clouds";
+        case 804: return "Overcast";
         default: return "Unknown condition";
     }
 }
