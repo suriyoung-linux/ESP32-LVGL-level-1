@@ -1,4 +1,4 @@
-# Level 1 / Lab 1 — Template Demo (โปรเจกต์แรกของบอร์ด ESP32 CYD)
+# — Template's Project โปรเจกต์ของบอร์ด ESP32 CYD level 1
 
 > **เฟิร์มแวร์ 1.2.0** — เพิ่มหน้าเว็บดูข้อมูลจาก ESP32; ผลลดทรัพยากรเดิม: [OPTIMIZATION_REPORT.md](OPTIMIZATION_REPORT.md)
 >
