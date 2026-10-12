@@ -10,6 +10,7 @@
 #include "dashboard.h"
 #include "weather_service.h"
 #include "dht_sensor.h"
+#include "mqtt_service.h"
 #include <WiFi.h>
 #include <esp_adc_cal.h>
 
@@ -32,6 +33,7 @@ namespace {
 Dashboard dashboard;
 WeatherService weatherService;
 DhtSensor dhtSensor;
+MqttService mqttService;
 WebServer apiServer(weather::API_PORT);
 bool apiStarted = false;
 bool wasNetworkConnected = false;
@@ -526,7 +528,9 @@ void setup()
     lastRgbEnabled = dashboard.rgbEnabled();
     dhtSensor.begin(millis());
     dashboard.updateDht(dhtSensor.get());
+    
     if (!weatherService.begin()) Serial.println("Weather worker could not start.");
+    if (!mqttService.begin()) Serial.println("MQTT service could not start.");
     initWiFi();
 }
 
@@ -562,5 +566,7 @@ void loop()
         updateLightLed();  // START/STOP มีผลทันที ไม่ต้องรอรอบ 500 ms
         lastLdrReadAt = millis();
     }
+    mqttService.poll(millis(), connected, dhtSensor.get());
+    dashboard.updateMqtt(mqttService.status(connected), mqttService.topicRoot());
     delay(1);  // ให้ task ระบบทำงาน ระหว่างรอสัมผัส/ข้อมูลเครือข่าย
 }

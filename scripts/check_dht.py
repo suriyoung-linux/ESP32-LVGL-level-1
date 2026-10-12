@@ -11,9 +11,9 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def main():
     source = (ROOT / "src/dashboard.cpp").read_text()
-    constants = source[source.index("constexpr uint16_t BACKGROUND"):source.index("void localTimeText")]
+    constants = source[source.index("constexpr int16_t HEADER_HEIGHT"):source.index("void localTimeText")]
     functions = "\n".join(firmware_function(source, "Dashboard::" + name)
-                          for name in ("pollTouch", "tap", "swipe", "drawDht", "drawWeatherClock", "drawDhtAge", "updateDht", "updateLdr", "poll"))
+                          for name in ("pollTouch", "tap", "swipe", "drawDht", "begin", "label", "weatherLabel", "button", "drawHeader", "drawSettings", "drawAppearance", "setThemeMode", "adjustThemeTime", "updateTheme", "drawLayout", "setSleepMinutes", "setBacklight", "beginCalibration", "drawCalibrationTarget", "beginTouchTest", "drawTouchTest", "drawTouchReadout", "drawDhtAge", "updateDht", "updateLdr", "updateMqtt", "drawMqtt", "poll"))
     functions = firmware_function(source, "localTimeText") + "\n" + functions
     template = (ROOT / "tests/native_dht_template.cpp").read_text()
     with tempfile.TemporaryDirectory(prefix="cyd-dht-check-", dir="/tmp") as directory:
@@ -21,10 +21,12 @@ def main():
         (target / "Arduino.h").write_text(
             "#pragma once\n#include <cstdint>\n"
             "constexpr int VSPI=3, LOW=0, HIGH=1, INPUT=0, OUTPUT=1;\n"
-            "inline void digitalWrite(int,int){}\ninline void pinMode(int,int){}\n"
+            "void digitalWrite(int,int);\ninline void pinMode(int,int){}\n"
             "uint32_t millis();\n"
+            "uint32_t ledcSetup(uint8_t,uint32_t,uint8_t);\n"
+            "void ledcAttachPin(uint8_t,uint8_t);\nvoid ledcWrite(uint8_t,uint32_t);\n"
             "struct FakeSerial { template<class...T> void printf(const char*,T...){} "
-            "void println(const char*){} };\nextern FakeSerial Serial;\n"
+            "void println(const char*){} operator bool() const {return true;} };\nextern FakeSerial Serial;\n"
         )
         (target / "DHT.h").write_text(
             "#pragma once\n#include <Arduino.h>\n#include <cassert>\n#include <cmath>\n"
@@ -45,6 +47,7 @@ def main():
                 "g++", "-std=c++17", "-Wall", "-Wextra", "-Werror",
                 "-fsanitize=undefined,address", "-DCYD_DHT_MODEL=" + str(model),
                 "-I" + str(target), "-I" + str(ROOT / "include"),
+                "-I" + str(ROOT / "tests"),
                 "-I" + str(ROOT / ".pio/libdeps/esp32dev/ArduinoJson/src"),
                 str(target / "check.cpp"), str(ROOT / "src/dht_sensor.cpp"),
                 "-o", str(binary),
